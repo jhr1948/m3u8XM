@@ -513,13 +513,27 @@ def make_sirius_handler(sxm):
 
 if __name__ == '__main__':
     config.read('config.ini')
-    email = config.get("account","email")
+    if config.has_option("account", "username"):
+        login_handle = config.get("account", "username")
+    else:
+        login_handle = config.get("account", "email")
     password = config.get("account","password")
 
     ip = config.get("settings","ip")
     port = int(config.get("settings","port"))
+
     print("Starting server at {}:{}".format(ip, port))
-    sxm = SiriusXM(email, password)
+
+    sxm = SiriusXM(login_handle, password)
+
+    playlist = sxm.get_playlist()
+    playlist = playlist.replace('/listen/', f'http://{ip}:{port}/listen/')
+
+    with open("siriusxm.m3u", "w", encoding="utf-8") as f:
+        f.write(playlist)
+
+    print("Saved playlist to siriusxm.m3u")
+
     httpd = HTTPServer((ip, port), make_sirius_handler(sxm))
     try:
         httpd.serve_forever()
