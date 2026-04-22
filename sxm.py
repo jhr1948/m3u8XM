@@ -513,14 +513,25 @@ def make_sirius_handler(sxm):
 
 if __name__ == '__main__':
     config.read('config.ini')
-    if config.has_option("account", "username"):
-        login_handle = config.get("account", "username")
-    else:
-        login_handle = config.get("account", "email")
-    password = config.get("account","password")
 
-    ip = config.get("settings","ip")
-    port = int(config.get("settings","port"))
+    email = config.get("account", "email", fallback="example@example.com").strip()
+    username = config.get("account", "username", fallback="example").strip()
+    password = config.get("account", "password").strip()
+
+    ip = config.get("settings", "ip")
+    port = int(config.get("settings", "port"))
+
+    # Ignore placeholder/default values
+    valid_email = email and email.lower() != "example@example.com"
+    valid_username = username and username.lower() != "example"
+
+    if valid_username:
+        login_handle = username
+    elif valid_email:
+        login_handle = email
+    else:
+        print("Error: please set either a real username or a real email in config.ini")
+        sys.exit(1)
 
     print("Starting server at {}:{}".format(ip, port))
 
