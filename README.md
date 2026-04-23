@@ -29,7 +29,7 @@ cd m3u8XM
 ```
 
 ### Add your config file
-rename ``config.example.ini`` to ``config.ini`` and edit the email/password to your SXM account.
+Don't forget to rename ``config.example.ini`` to ``config.ini`` and edit the email or username & password to your SXM account.
 
 Start the server
 
@@ -37,6 +37,30 @@ Start the server
 python sxm.py
 ```
 
+## Run as a Service
+1. create a Service File named /etc/systemd/system/m3u8XM.service (edit your actual paths & username)
+```
+[Unit]
+Description=M3UXM Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/path/to/m3u8XM/sxm.py
+WorkingDirectory=/home/path/to/m3u8XM
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=yourusername
+
+[Install]
+WantedBy=multi-user.target
+```
+2. Enable and Start
+```
+sudo systemctl daemon-reload      # Reload systemd to recognize new service
+sudo systemctl enable m3u8XM      # Set to start on boot
+sudo systemctl start m3u8XM       # Start it now
+```
 
 ## License
 
