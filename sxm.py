@@ -50,7 +50,7 @@ class SiriusXM:
             if res.status_code >= 400 and res.status_code < 500:
                 self.login()
                 self.authenticate()
-                return self.sfetch(self,url,retries=retries+1)
+                return self.sfetch(url, retries=retries+1)
             self.log("Failed to recieve stream data. Error code {}".format(str(res.status_code)))
             return None
                 
@@ -178,26 +178,22 @@ class SiriusXM:
             return False
 
     def get_playlist(self):
-        # Not 100% sure how this was working previously, but modern times
-        # mostly fetch info via json, so we have to make the m3u8 from scratch
-        # Create our own M3U8 from scratch, include all we found
         if not self.channels:
             self.get_channels()
         if not self.m3u8dat:
             data = []
             data.append("#EXTM3U")
-            m3umetadata = """#EXTINF:-1 tvg-id="{}" tvg-logo="{}" group-title="{}",{}\n{}"""
-            for channel in self.channels:
-                #TODO: Work on finding the proper M3U8 metadata needed.
+            m3umetadata = """#EXTINF:-1 tvg-id="{}" tvg-chno="{}" tvg-logo="{}" group-title="{}",{}\n{}"""
+            for num, channel in enumerate(self.channels, start=1):
                 title = channel["title"]
                 genre = channel["genre"]
                 logo = channel["logo"]
                 channel_id = channel["channel_id"]
                 url = "/listen/{}".format(channel["id"])
-                formattedm3udata = m3umetadata.format(channel_id,logo,genre,title,url)
+                formattedm3udata = m3umetadata.format(channel_id, num, logo, genre, title, url)
                 data.append(formattedm3udata)
             self.m3u8dat = "\n".join(data)
-        
+
         return self.m3u8dat
 
     def get_channels(self):
