@@ -42,18 +42,30 @@ class SiriusXM:
     def is_session_authenticated(self):
         return 'Authorization' in self.session.headers
     
-    def sfetch(self, url,retries=0): # if this errors again, its likely VLC or something holding old urls prob, gotta force a refresh then somehow
+    def sfetch(self, url, retries=0):
+        # Fetch stream/key/segment data. If SXM/CDN returns a client-side error
+        # such as 401/403/404, try a fresh login once or twice, then fail
+        # cleanly instead of crashing the server.
         if retries >= 2:
-            self.log("Failed to reauthenticate after 401. Dump: ",self.session.headers)
-        res = self.session.get(url)
+            self.log("Failed to reauthenticate after stream fetch error.")
+            return None
+
+        try:
+            res = self.session.get(url, timeout=15)
+        except requests.RequestException as e:
+            self.log("Stream fetch request failed: {}".format(e))
+            return None
+
         if res.status_code != 200:
-            if res.status_code >= 400 and res.status_code < 500:
+            if 400 <= res.status_code < 500:
+                self.log("Stream fetch returned {}. Reauthenticating and retrying.".format(res.status_code))
                 self.login()
                 self.authenticate()
                 return self.sfetch(url, retries=retries+1)
-            self.log("Failed to recieve stream data. Error code {}".format(str(res.status_code)))
+
+            self.log("Failed to receive stream data. Error code {}".format(str(res.status_code)))
             return None
-                
+
         return res.content
 
     def get(self, method, params={}, authenticate=True, retries=0):
@@ -139,13 +151,13 @@ class SiriusXM:
         }
         data = self.post('device/v1/devices', postdata, authenticate=False,headers=sxmheaders)
         if not data:
-            self.log("Error creating device session:",data)
+            self.log("Error creating device session: {}".format(data))
             return False
 
         # Once device is registered, grant anonymous permissions 
         data = self.post('session/v1/sessions/anonymous', {}, authenticate=False,headers=sxmheaders)
         if not data:
-            self.log("Error validating anonymous session:",data)
+            self.log("Error validating anonymous session: {}".format(data))
             return False
         try:
             return "accessToken" in data and self.is_logged_in()
@@ -407,39 +419,64 @@ class SiriusXM:
             time.sleep(delay)
     
     def get_channel(self, id):
-        # Hit a wall in how I wanted to implement this, but this is what I ended up doing:
-        # Caching the /tuneSource url provided, and associating it to the /listen UUID
-        # this prevents multiple hits to /tuneSource and more to the Streaming CDN
-        # potentially speeding this part of the process up, as well as being more subtle
-        # in main site web traffic.
+        # Fetch and rewrite the channel's media playlist. If cached stream info
+        # goes stale after channel switching, clear it and tune again once.
         streaminfo = self.get_tuner(id)
+        if not streaminfo:
+            self.log("No stream info available for channel {}".format(id))
+            return False
+
         sessionId = streaminfo["sessionId"] if "sessionId" in streaminfo and streaminfo["sessionId"] != None else ''
-        aacurl = "{}/{}".format(streaminfo["base_url"],streaminfo["quality"])
-        # fetch the list of aac files
+        aacurl = "{}/{}".format(streaminfo["base_url"], streaminfo["quality"])
+
         data = self.sfetch(aacurl)
         if not data:
-            self.log("failed to fetch AAC stream list")
-            return False
+            self.log("Failed to fetch AAC stream list; clearing cached tuner info for {}".format(id))
+            self.stream_urls.pop(id, None)
+            streaminfo = self.get_tuner(id)
+            if not streaminfo:
+                return False
+            sessionId = streaminfo["sessionId"] if "sessionId" in streaminfo and streaminfo["sessionId"] != None else ''
+            aacurl = "{}/{}".format(streaminfo["base_url"], streaminfo["quality"])
+            data = self.sfetch(aacurl)
+            if not data:
+                self.log("Failed to fetch AAC stream list after retune")
+                return False
+
         data = data.decode("utf-8")
-        data = data.replace("https://api.edge-gateway.siriusxm.com/playback/key/v1/","/key/",1)
-        lineoutput = []
+        data = data.replace("https://api.edge-gateway.siriusxm.com/playback/key/v1/", "/key/", 1)
+
         lines = data.splitlines()
         for x in range(len(lines)):
             if lines[x].rstrip().endswith('.aac'):
-                lines[x] = '{}/{}?{}'.format(id, lines[x],sessionId)
+                lines[x] = '{}/{}?{}'.format(id, lines[x], sessionId)
         return '\n'.join(lines).encode('utf-8')
 
-    def get_segment(self,id,seg,sessionId=''):
-        streaminfo = None
-        if sessionId != '':
-            streaminfo = self.get_tuner_cached(id,sessionId)      
-        else:      
-            streaminfo = self.get_tuner(id)
-        baseurl = streaminfo["base_url"]
-        HLStag = streaminfo["HLS"]
-        segmenturl = "{}/{}/{}".format(baseurl,HLStag,seg)
-        data = self.sfetch(segmenturl)
-        return data
+    def get_segment(self, id, seg, sessionId=''):
+        try:
+            if sessionId != '':
+                streaminfo = self.get_tuner_cached(id, sessionId)
+            else:
+                streaminfo = self.get_tuner(id)
+
+            if not streaminfo:
+                return None
+
+            baseurl = streaminfo["base_url"]
+            HLStag = streaminfo["HLS"]
+            segmenturl = "{}/{}/{}".format(baseurl, HLStag, seg)
+            data = self.sfetch(segmenturl)
+
+            if not data and sessionId == '':
+                # Linear-channel segment URL may have gone stale. Clear cached
+                # tuner data so the next request forces a fresh tune.
+                self.stream_urls.pop(id, None)
+
+            return data
+        except KeyError:
+            self.log("Missing cached Xtra stream session {}; retuning {}".format(sessionId, id))
+            self.stream_urls.pop(id, None)
+            return None
         
     def getAESkey(self,uuid):
         data = self.get("playback/key/v1/{}".format(uuid))
@@ -451,6 +488,14 @@ class SiriusXM:
 
 def make_sirius_handler(sxm):
     class SiriusHandler(BaseHTTPRequestHandler):
+        def safe_write(self, data):
+            try:
+                self.safe_write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                # Media players often open, cancel, and retry requests while
+                # probing HLS streams. Do not treat that as a server error.
+                pass
+
         def do_GET(self):
             if self.path.find('.m3u8') > 0:
                 data = sxm.get_playlist()
@@ -458,7 +503,7 @@ def make_sirius_handler(sxm):
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/x-mpegURL')
                     self.end_headers()
-                    self.wfile.write(bytes(data, 'utf-8'))
+                    self.safe_write(bytes(data, 'utf-8'))
                     return
                 else:
                     self.send_response(500)
@@ -478,7 +523,7 @@ def make_sirius_handler(sxm):
                     self.send_response(200)
                     self.send_header('Content-Type', 'audio/x-aac')
                     self.end_headers()
-                    self.wfile.write(data)
+                    self.safe_write(data)
                 else:
                     self.send_response(500)
                     self.end_headers()
@@ -493,13 +538,17 @@ def make_sirius_handler(sxm):
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/plain')
                     self.end_headers()
-                    self.wfile.write(key)
+                    self.safe_write(key)
             elif self.path.startswith("/listen/"):
                 data = sxm.get_channel(self.path.split('/')[-1])
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/x-mpegURL')
-                self.end_headers()
-                self.wfile.write(data)
+                if data:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/x-mpegURL')
+                    self.end_headers()
+                    self.safe_write(data)
+                else:
+                    self.send_response(500)
+                    self.end_headers()
             else:
                 self.send_response(500)
                 self.end_headers()
@@ -533,8 +582,12 @@ if __name__ == '__main__':
 
     sxm = SiriusXM(login_handle, password)
 
+    playlist_host = config.get("settings", "playlist_host", fallback=ip).strip()
+    if playlist_host == "0.0.0.0":
+        playlist_host = "127.0.0.1"
+
     playlist = sxm.get_playlist()
-    playlist = playlist.replace('/listen/', f'http://{ip}:{port}/listen/')
+    playlist = playlist.replace('/listen/', f'http://{playlist_host}:{port}/listen/')
 
     with open("siriusxm.m3u", "w", encoding="utf-8") as f:
         f.write(playlist)
