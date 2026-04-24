@@ -31,6 +31,23 @@ cd m3u8XM
 ### Add your config file
 Don't forget to rename ``config.example.ini`` to ``config.ini`` and edit the email or username & password to your SXM account.
 
+### config file IP & playlist_host examples
+```
+# Home LAN with the playlist_host IP being the computer running m3u8XM
+ip = 0.0.0.0
+playlist_host = 192.168.x.x
+```
+```
+# Tailscale with playlist_host IP using the Tailscale IP address
+ip = 0.0.0.0
+playlist_host = 100.x.x.x
+```
+```
+# Reverse proxy setup
+ip = 127.0.0.1
+playlist_host = stream.yourdomain.com
+```
+
 Start the server
 
 ```bash
