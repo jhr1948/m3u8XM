@@ -150,7 +150,7 @@ playlist_output = /app/output/siriusxm.m3u
 ```
 Build the Docker Image (one-time)
 ```
-docker build -t m3u8xm:latest .
+docker build --no-cache -t m3u8xm:latest .
 ```
 docker-compose.yml
 ```
