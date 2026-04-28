@@ -675,7 +675,10 @@ class SiriusXM:
             sourceContextId = self._first_present(data, ["sourceContextId"]) or contextId
             sequenceToken = self._first_present(data, ["sequenceToken"]) or sequenceToken
             streaminfo["sessionId"] = sessionId
-            streaminfo["expires"] = time.time() + 600
+            streaminfo["expires"] = time.time() + max(
+                1800,
+                int(getattr(self, "xtra_playlist_max_age", 600)) + 900
+            )
 
         base_url, m3u8_loc = primarystreamurl.rsplit('/', 1)
         streaminfo["base_url"] = base_url
